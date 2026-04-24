@@ -21,3 +21,4 @@ __pycache__/
 # Architect Tools
 .direnv/
 .uv_cache/
+*.xlsx
