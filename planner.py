@@ -78,33 +78,42 @@ def filter_bins(person: pd.Series) -> pd.Series:
     return ~(up.isin(["TO DO", "INSTRUKCJA", "HOLD"]))
 
 def make_chart_df(df, col_person, col_created, col_completed):
-    # Osoba/rok/kwartał + 2 serie: utworzone (wg Data utworzenia), zakończone (wg Data ukończenia)
+    # Osoba/rok/kwartał + 2 serie: Ukończone (ma datę ukończenia), Nieukończone (brak daty ukończenia)
     person = norm_text(df[col_person]).replace('', '—')
     keep = filter_bins(person)
     person = person[keep]
     created = smart_datetime(df[col_created])[keep]
     completed = smart_datetime(df[col_completed])[keep]
 
-    created_df = (
-        pd.DataFrame({'osoba': person, 'rok': created.dt.year, 'kwartał': created.dt.quarter})
+    has_completed = completed.notna()
+    not_completed = completed.isna() & created.notna()
+
+    # Ukończone – wg daty ukończenia
+    done_df = (
+        pd.DataFrame({'osoba': person[has_completed],
+                      'rok': completed[has_completed].dt.year,
+                      'kwartał': completed[has_completed].dt.quarter})
         .dropna(subset=['osoba','rok','kwartał'])
         .groupby(['osoba','rok','kwartał']).size()
-        .rename('Liczba UTWORZONYCH').reset_index()
+        .rename('Ukończone').reset_index()
     )
-    done_df = (
-        pd.DataFrame({'osoba': person, 'rok': completed.dt.year, 'kwartał': completed.dt.quarter})
-        .dropna(subset=['rok','kwartał'])
+    # Nieukończone – wg daty utworzenia
+    undone_df = (
+        pd.DataFrame({'osoba': person[not_completed],
+                      'rok': created[not_completed].dt.year,
+                      'kwartał': created[not_completed].dt.quarter})
+        .dropna(subset=['osoba','rok','kwartał'])
         .groupby(['osoba','rok','kwartał']).size()
-        .rename('Liczba ZAKOŃCZONYCH').reset_index()
+        .rename('Nieukończone').reset_index()
     )
-    pivot = pd.merge(created_df, done_df, on=['osoba','rok','kwartał'], how='outer')
-    pivot['Liczba UTWORZONYCH']  = pivot['Liczba UTWORZONYCH'].fillna(0).astype(int)
-    pivot['Liczba ZAKOŃCZONYCH'] = pivot['Liczba ZAKOŃCZONYCH'].fillna(0).astype(int)
+    pivot = pd.merge(done_df, undone_df, on=['osoba','rok','kwartał'], how='outer')
+    pivot['Ukończone']    = pivot['Ukończone'].fillna(0).astype(int)
+    pivot['Nieukończone'] = pivot['Nieukończone'].fillna(0).astype(int)
     pivot = pivot.sort_values(by=['osoba','rok','kwartał'],
                               key=lambda s: s.str.casefold() if s.name=='osoba' else s).reset_index(drop=True)
     return pivot
 
-def write_excel_with_chart(path, pivot_df, aggr_df=None, details_df=None, title="ZADANIE UTWORZONE DO ZAKOŃCZONE"):
+def write_excel_with_chart(path, pivot_df, aggr_df=None, details_df=None, title="Ukończone vs Nieukończone"):
     with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
         book = writer.book
         if aggr_df is not None:
@@ -116,84 +125,95 @@ def write_excel_with_chart(path, pivot_df, aggr_df=None, details_df=None, title=
         ws_pivot = book.add_worksheet('Pivot'); writer.sheets['Pivot'] = ws_pivot
         cat_person = pivot_df['osoba'].tolist()
         cat_year   = pivot_df['rok'].astype(int).tolist()
-        cat_quart  = pivot_df['kwartał'].astype(int).map(lambda q: f"KWARTAŁ{q}").tolist()
+        cat_quart  = pivot_df['kwartał'].astype(int).map(lambda q: f"KW{q}").tolist()
 
-        ws_pivot.write_row(0, 0, ["Osoba (oś)", *cat_person])
-        ws_pivot.write_row(1, 0, ["Rok (oś)",   *cat_year])
-        ws_pivot.write_row(2, 0, ["Kwartał (oś)", *cat_quart])
+        # Wiersze 0-2: hierarchiczna oś X  [Osoba] > [Rok] > [Kwartał]
+        ws_pivot.write_row(0, 1, cat_person)
+        ws_pivot.write_row(1, 1, cat_year)
+        ws_pivot.write_row(2, 1, cat_quart)
 
-        ws_pivot.write(4, 0, "Liczba UTWORZONYCH")
-        ws_pivot.write_row(4, 1, pivot_df["Liczba UTWORZONYCH"].tolist())
-        ws_pivot.write(5, 0, "Liczba ZAKOŃCZONYCH")
-        ws_pivot.write_row(5, 1, pivot_df["Liczba ZAKOŃCZONYCH"].tolist())
+        # Nagłówki osi w kolumnie A
+        header_fmt = book.add_format({'bold': True, 'bg_color': '#D9E1F2'})
+        ws_pivot.write(0, 0, "Osoba", header_fmt)
+        ws_pivot.write(1, 0, "Rok", header_fmt)
+        ws_pivot.write(2, 0, "Kwartał", header_fmt)
+
+        # Wiersze danych (serie wykresu)
+        data_fmt = book.add_format({'bold': True})
+        ws_pivot.write(3, 0, "Ukończone", data_fmt)
+        ws_pivot.write_row(3, 1, pivot_df["Ukończone"].tolist())
+        ws_pivot.write(4, 0, "Nieukończone", data_fmt)
+        ws_pivot.write_row(4, 1, pivot_df["Nieukończone"].tolist())
 
         # === DODATKOWA SEKCJA: SUMA PER KWARTAŁ (bez podziału na osoby) ===
         if not pivot_df.empty:
             per_q = (pivot_df
-                     .groupby(['rok', 'kwartał'], as_index=False)[['Liczba UTWORZONYCH','Liczba ZAKOŃCZONYCH']]
+                     .groupby(['rok', 'kwartał'], as_index=False)[['Ukończone','Nieukończone']]
                      .sum()
                      .sort_values(['rok','kwartał']))
-            q_labels = [f"{int(r)} | KWARTAŁ{int(k)}" for r, k in zip(per_q['rok'], per_q['kwartał'])]
-            ws_pivot.write_row(8, 0, ["Kwartał (oś)", *q_labels])
-            ws_pivot.write(10, 0, "UTWORZONE (suma)")
-            ws_pivot.write_row(10, 1, per_q['Liczba UTWORZONYCH'].tolist())
-            ws_pivot.write(11, 0, "ZAKOŃCZONE (suma)")
-            ws_pivot.write_row(11, 1, per_q['Liczba ZAKOŃCZONYCH'].tolist())
+            q_labels = [f"{int(r)} | KW{int(k)}" for r, k in zip(per_q['rok'], per_q['kwartał'])]
+            ws_pivot.write_row(7, 0, ["Kwartał (oś)", *q_labels])
+            ws_pivot.write(9, 0, "Ukończone (suma)")
+            ws_pivot.write_row(9, 1, per_q['Ukończone'].tolist())
+            ws_pivot.write(10, 0, "Nieukończone (suma)")
+            ws_pivot.write_row(10, 1, per_q['Nieukończone'].tolist())
         else:
             q_labels = []
 
         # === Arkusz z wykresami ===
         ws_chart = book.add_worksheet('Wykres'); writer.sheets['Wykres'] = ws_chart
 
-        # Wykres 1: OSOBY × KWARTAŁY (stacked)
-        chart1 = book.add_chart({'type': 'column','subtype': 'stacked'})
+        # Wykres 1: OSOBY × KWARTAŁY – Multi-level Category Axis
+        chart1 = book.add_chart({'type': 'column'})
         last_col = len(pivot_df)
+        # categories obejmują 3 wiersze (0,1,2) → xlsxwriter tworzy hierarchiczną oś X
         chart1.add_series({
-            'name':       "='Pivot'!$A$5",   # UTWORZONE
+            'name':       "='Pivot'!$A$4",   # Ukończone
             'categories': ['Pivot', 0, 1, 2, last_col],
-            'values':     ['Pivot', 4, 1, 4, last_col],
-            'data_labels': {'value': True},
+            'values':     ['Pivot', 3, 1, 3, last_col],
+            'data_labels': {'value': True, 'font': {'size': 8}},
             'fill': {'color': '#43A047'},  # zielony
-            'border': {'color': '#43A047'},
+            'border': {'color': '#2E7D32'},
         })
         chart1.add_series({
-            'name':       "='Pivot'!$A$6",   # ZAKOŃCZONE
+            'name':       "='Pivot'!$A$5",   # Nieukończone
             'categories': ['Pivot', 0, 1, 2, last_col],
-            'values':     ['Pivot', 5, 1, 5, last_col],
-            'data_labels': {'value': True},
-            'fill': {'color': '#1E88E5'},  # niebieski
-            'border': {'color': '#1E88E5'},
+            'values':     ['Pivot', 4, 1, 4, last_col],
+            'data_labels': {'value': True, 'font': {'size': 8}},
+            'fill': {'color': '#E53935'},  # czerwony
+            'border': {'color': '#B71C1C'},
         })
         chart1.set_title({'name': title})
         chart1.set_legend({'position': 'top'})
         chart1.set_y_axis({'major_gridlines': {'visible': True}})
-        ws_chart.insert_chart('B2', chart1, {'x_scale': 2.0, 'y_scale': 1.6})
+        chart1.set_size({'x_scale': 2.2, 'y_scale': 1.6})
+        ws_chart.insert_chart('B2', chart1)
 
         # Wykres 2: SUMA PER KWARTAŁ (CLUSTERED, bez podziału na osoby)
         if q_labels:
-            chart2 = book.add_chart({'type': 'column'})  # clustered
+            chart2 = book.add_chart({'type': 'column'})
             last_col_q = len(q_labels)
             chart2.add_series({
-                'name':       "='Pivot'!$A$11",  # UTWORZONE (suma)
-                'categories': ['Pivot', 8, 1, 8, last_col_q],
-                'values':     ['Pivot', 10, 1, 10, last_col_q],
+                'name':       "='Pivot'!$A$10",
+                'categories': ['Pivot', 7, 1, 7, last_col_q],
+                'values':     ['Pivot', 9, 1, 9, last_col_q],
                 'data_labels': {'value': True},
                 'fill': {'color': '#43A047'},
-                'border': {'color': '#43A047'},
+                'border': {'color': '#2E7D32'},
             })
             chart2.add_series({
-                'name':       "='Pivot'!$A$12",  # ZAKOŃCZONE (suma)
-                'categories': ['Pivot', 8, 1, 8, last_col_q],
-                'values':     ['Pivot', 11, 1, 11, last_col_q],
+                'name':       "='Pivot'!$A$11",
+                'categories': ['Pivot', 7, 1, 7, last_col_q],
+                'values':     ['Pivot', 10, 1, 10, last_col_q],
                 'data_labels': {'value': True},
-                'fill': {'color': '#1E88E5'},
-                'border': {'color': '#1E88E5'},
+                'fill': {'color': '#E53935'},
+                'border': {'color': '#B71C1C'},
             })
-            chart2.set_title({'name': 'Suma kwartalna — Utworzone vs Zakończone'})
+            chart2.set_title({'name': 'Suma kwartalna — Ukończone vs Nieukończone'})
             chart2.set_legend({'position': 'top'})
             chart2.set_y_axis({'major_gridlines': {'visible': True}})
-            # "obok" pierwszego wykresu:
-            ws_chart.insert_chart('N2', chart2, {'x_scale': 1.6, 'y_scale': 1.6})
+            chart2.set_size({'x_scale': 1.6, 'y_scale': 1.6})
+            ws_chart.insert_chart('N2', chart2)
 
 
 # ====== Budowa klucza unikalności (anty-duplikacja) ===========================
@@ -467,7 +487,7 @@ class App(tk.Tk):
                 return
 
             write_excel_with_chart(path, pivot_df=pivot, aggr_df=out, details_df=details,
-                                   title="ZADANIE UTWORZONE DO ZAKOŃCZONE")
+                                   title="Ukończone vs Nieukończone (Osoba / Rok / Kwartał)")
             self.log(f"Zapisano wynik do: {path}")
             messagebox.showinfo("Sukces", f"Zapisano wynik do:\n{path}")
         except Exception as e:
@@ -508,22 +528,23 @@ class App(tk.Tk):
         out.reset_index(drop=True, inplace=True)
 
         # Szczegóły – oba zbiory (ukończone i nieukończone)
+        has_done = completed.notna()
         det_done = pd.DataFrame({
-            'osoba': person,
-            'data_utworzenia': created,
-            'data_ukonczenia': completed,
-            'status': pd.Series(['ukończone']*len(person)),
-            'rok': completed.dt.year,
-            'kwartał': completed.dt.quarter,
+            'osoba': person[has_done],
+            'data_utworzenia': created[has_done],
+            'data_ukonczenia': completed[has_done],
+            'status': 'ukończone',
+            'rok': completed[has_done].dt.year,
+            'kwartał': completed[has_done].dt.quarter,
         }).dropna(subset=['rok','kwartał'])
 
         det_not_done = pd.DataFrame({
-            'osoba': person.where(not_done_mask),
-            'data_utworzenia': created.where(not_done_mask),
-            'data_ukonczenia': completed.where(not_done_mask),
-            'status': pd.Series(['nieukończone']*len(person)).where(not_done_mask),
-            'rok': not_done_created.dt.year,
-            'kwartał': not_done_created.dt.quarter,
+            'osoba': person[not_done_mask],
+            'data_utworzenia': created[not_done_mask],
+            'data_ukonczenia': pd.NaT,
+            'status': 'nieukończone',
+            'rok': created[not_done_mask].dt.year,
+            'kwartał': created[not_done_mask].dt.quarter,
         }).dropna(subset=['osoba','rok','kwartał'])
 
         details = pd.concat([det_done, det_not_done], ignore_index=True).sort_values(

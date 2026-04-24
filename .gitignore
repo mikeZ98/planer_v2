@@ -8,3 +8,33 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Data files (user-specific, do not commit)
+data/*.xlsx
+data/*.xls
+data/*.csv
+data/*.json
+*.xlsx
+!assets/**
+
+# Streamlit
+.streamlit/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# uv
+uv.lock
+
+# Legacy
+planner.py
