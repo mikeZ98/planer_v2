@@ -1,40 +1,23 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
+# Environments
+.venv/
+node_modules/
 dist/
-wheels/
-*.egg-info
+build/
+bin/
+__pycache__/
+*.py[cod]
 
-# Virtual environments
-.venv
-
-# Data files (user-specific, do not commit)
-data/*.xlsx
-data/*.xls
-data/*.csv
-data/*.json
-*.xlsx
-!assets/**
-
-# Streamlit
-.streamlit/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
+# OS & IDE
 .DS_Store
-Thumbs.db
+.vscode/
+.idea/
+*.swp
+              
+# Lab & Secrets
+.env
+*.log
+.project_context.txt
 
-# Docker
-docker-compose.override.yml
-
-# uv
-uv.lock
-
-# Legacy
-planner.py
+# Architect Tools
+.direnv/
+.uv_cache/
